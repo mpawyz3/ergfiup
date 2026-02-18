@@ -258,6 +258,28 @@ export default function Connect() {
   const [selectedUsersForInvite, setSelectedUsersForInvite] = useState<string[]>([]);
   const [sendingInvites, setSendingInvites] = useState(false);
 
+  // Group detail view states
+  const [showGroupDetail, setShowGroupDetail] = useState(false);
+  const [selectedGroup, setSelectedGroup] = useState<Group | null>(null);
+  const [groupMessages, setGroupMessages] = useState<any[]>([]);
+  const [groupMembers, setGroupMembers] = useState<any[]>([]);
+  const [groupMessageInput, setGroupMessageInput] = useState('');
+  const [sendingGroupMessage, setSendingGroupMessage] = useState(false);
+  const [userGroupRole, setUserGroupRole] = useState<'admin' | 'moderator' | 'member'>('member');
+
+  // Group edit states
+  const [showEditGroupModal, setShowEditGroupModal] = useState(false);
+  const [editingGroup, setEditingGroup] = useState<Group | null>(null);
+  const [editGroupData, setEditGroupData] = useState({
+    name: '',
+    description: '',
+    rules: '',
+    category: 'professional',
+    visibility: 'public',
+    max_members: null as number | null
+  });
+  const [editingGroupSubmitting, setEditingGroupSubmitting] = useState(false);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
 
@@ -1070,6 +1092,186 @@ export default function Connect() {
     }
   };
 
+  // Load group detail (messages, members, user role)
+  const loadGroupDetail = async (groupId: string) => {
+    if (!user?.id) return;
+    try {
+      // Load group data
+      const { data: groupData } = await supabase
+        .from('groups')
+        .select('*')
+        .eq('id', groupId)
+        .single();
+
+      if (groupData) {
+        setSelectedGroup(groupData);
+        setEditGroupData({
+          name: groupData.name,
+          description: groupData.description,
+          rules: groupData.rules,
+          category: groupData.category,
+          visibility: groupData.visibility,
+          max_members: groupData.max_members
+        });
+      }
+
+      // Load messages
+      const { data: messagesData } = await supabase
+        .from('group_messages')
+        .select('*, profiles:user_id (name, avatar_url)')
+        .eq('group_id', groupId)
+        .order('created_at', { ascending: true })
+        .limit(50);
+
+      setGroupMessages(messagesData || []);
+
+      // Load members
+      const { data: membersData } = await supabase
+        .from('group_members')
+        .select('*, profiles:user_id (id, name, avatar_url, tier)')
+        .eq('group_id', groupId)
+        .eq('status', 'active');
+
+      setGroupMembers(membersData || []);
+
+      // Get user's role
+      const { data: userMemberData } = await supabase
+        .from('group_members')
+        .select('role')
+        .eq('group_id', groupId)
+        .eq('user_id', user.id)
+        .single();
+
+      setUserGroupRole(userMemberData?.role || 'member');
+      setShowGroupDetail(true);
+    } catch (error) {
+      console.error('🔴 Error loading group detail:', error);
+      addToast('Error loading group', 'error');
+    }
+  };
+
+  // Send message to group
+  const handleSendGroupMessage = async () => {
+    if (!user?.id || !selectedGroup || !groupMessageInput.trim()) return;
+
+    setSendingGroupMessage(true);
+    try {
+      const { error } = await supabase
+        .from('group_messages')
+        .insert([{
+          group_id: selectedGroup.id,
+          user_id: user.id,
+          content: groupMessageInput.trim()
+        }]);
+
+      if (error) {
+        console.error('🔴 Error sending message:', error);
+        addToast('Failed to send message', 'error');
+      } else {
+        setGroupMessageInput('');
+        loadGroupDetail(selectedGroup.id);
+      }
+    } catch (error) {
+      console.error('🔴 Unexpected error sending message:', error);
+      addToast('Error sending message', 'error');
+    } finally {
+      setSendingGroupMessage(false);
+    }
+  };
+
+  // Leave group
+  const handleLeaveGroup = async () => {
+    if (!user?.id || !selectedGroup) return;
+
+    if (!window.confirm('Leave this group?')) return;
+
+    try {
+      const { error } = await supabase
+        .from('group_members')
+        .delete()
+        .eq('group_id', selectedGroup.id)
+        .eq('user_id', user.id);
+
+      if (error) {
+        console.error('🔴 Error leaving group:', error);
+        addToast('Failed to leave group', 'error');
+      } else {
+        addToast('Left group', 'success');
+        setShowGroupDetail(false);
+        setSelectedGroup(null);
+        loadMyInviteOnlyGroups();
+        loadUserGroups();
+      }
+    } catch (error) {
+      console.error('🔴 Unexpected error leaving group:', error);
+      addToast('Error leaving group', 'error');
+    }
+  };
+
+  // Edit group
+  const handleEditGroup = async () => {
+    if (!user?.id || !selectedGroup) return;
+
+    setEditingGroupSubmitting(true);
+    try {
+      const { error } = await supabase
+        .from('groups')
+        .update({
+          name: editGroupData.name,
+          description: editGroupData.description,
+          rules: editGroupData.rules,
+          category: editGroupData.category,
+          visibility: editGroupData.visibility,
+          max_members: editGroupData.max_members
+        })
+        .eq('id', selectedGroup.id)
+        .eq('creator_id', user.id);
+
+      if (error) {
+        console.error('🔴 Error updating group:', error);
+        addToast('Failed to update group', 'error');
+      } else {
+        addToast('Group updated', 'success');
+        setShowEditGroupModal(false);
+        loadGroupDetail(selectedGroup.id);
+        loadMyInviteOnlyGroups();
+      }
+    } catch (error) {
+      console.error('🔴 Unexpected error updating group:', error);
+      addToast('Error updating group', 'error');
+    } finally {
+      setEditingGroupSubmitting(false);
+    }
+  };
+
+  // Delete group
+  const handleDeleteGroup = async () => {
+    if (!user?.id || !selectedGroup) return;
+
+    if (!window.confirm('Delete this group? This cannot be undone.')) return;
+
+    try {
+      const { error } = await supabase
+        .from('groups')
+        .delete()
+        .eq('id', selectedGroup.id)
+        .eq('creator_id', user.id);
+
+      if (error) {
+        console.error('🔴 Error deleting group:', error);
+        addToast('Failed to delete group', 'error');
+      } else {
+        addToast('Group deleted', 'success');
+        setShowGroupDetail(false);
+        setSelectedGroup(null);
+        loadMyInviteOnlyGroups();
+      }
+    } catch (error) {
+      console.error('🔴 Unexpected error deleting group:', error);
+      addToast('Error deleting group', 'error');
+    }
+  };
+
   const loadTeams = async () => {
     try {
       const { data, error } = await supabase
@@ -1370,45 +1572,6 @@ export default function Connect() {
     } catch (error) {
       console.error('Error joining group:', error);
       addToast('Error joining group', 'error');
-    }
-  };
-
-  // Leave a group
-  const handleLeaveGroup = async (groupId: string) => {
-    if (!user?.id) return;
-
-    try {
-      const { error: leaveError } = await supabase
-        .from('group_members')
-        .delete()
-        .eq('group_id', groupId)
-        .eq('user_id', user.id);
-
-      if (leaveError) {
-        addToast('Failed to leave group', 'error');
-        return;
-      }
-
-      // Update group member count
-      const { data: currentGroup } = await supabase
-        .from('groups')
-        .select('member_count')
-        .eq('id', groupId)
-        .single();
-
-      if (currentGroup && currentGroup.member_count > 0) {
-        await supabase
-          .from('groups')
-          .update({ member_count: currentGroup.member_count - 1 })
-          .eq('id', groupId);
-      }
-
-      addToast('Left group successfully!', 'success');
-      loadUserGroups();
-      loadGroups();
-    } catch (error) {
-      console.error('Error leaving group:', error);
-      addToast('Error leaving group', 'error');
     }
   };
 
@@ -2788,10 +2951,10 @@ export default function Connect() {
 
                       {userGroups.includes(group.id) ? (
                         <button
-                          onClick={() => handleLeaveGroup(group.id)}
-                          className="w-full py-2 bg-red-500/20 text-red-400 font-semibold rounded-lg hover:bg-red-500/30 transition-colors"
+                          onClick={() => loadGroupDetail(group.id)}
+                          className="w-full py-2 bg-blue-500/30 text-blue-300 font-semibold rounded-lg hover:bg-blue-500/50 transition-colors mb-2"
                         >
-                          Leave Group
+                          View Group
                         </button>
                       ) : (
                         <button
@@ -2876,6 +3039,13 @@ export default function Connect() {
                             {group.category}
                           </span>
                         </div>
+
+                        <button
+                          onClick={() => loadGroupDetail(group.id)}
+                          className="w-full py-2 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 transition-colors flex items-center justify-center gap-2 mb-2"
+                        >
+                          💬 View Group
+                        </button>
 
                         {group.creator_id === user?.id && (
                           <button
@@ -3759,6 +3929,214 @@ export default function Connect() {
                   title="Document Preview"
                 />
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* GROUP DETAIL MODAL */}
+      {showGroupDetail && selectedGroup && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="bg-gradient-to-br from-slate-900 to-slate-800 rounded-2xl w-full max-w-2xl max-h-[90vh] flex flex-col border border-white/10">
+            {/* Header */}
+            <div className="flex items-center justify-between p-6 border-b border-white/10">
+              <div className="flex items-center gap-3">
+                {selectedGroup.avatar_url && (
+                  <img src={selectedGroup.avatar_url} alt={selectedGroup.name} className="w-10 h-10 rounded-lg" />
+                )}
+                <h2 className="text-2xl font-bold text-white">{selectedGroup.name}</h2>
+              </div>
+              <button
+                onClick={() => {
+                  setShowGroupDetail(false);
+                  setSelectedGroup(null);
+                }}
+                className="text-gray-400 hover:text-white"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="flex-1 overflow-y-auto">
+              {/* Group Info */}
+              <div className="p-6 border-b border-white/10">
+                <p className="text-gray-300 mb-4">{selectedGroup.description}</p>
+                <div className="grid grid-cols-2 gap-4 text-sm">
+                  <div>
+                    <p className="text-gray-400">Category</p>
+                    <p className="text-white capitalize">{selectedGroup.category}</p>
+                  </div>
+                  <div>
+                    <p className="text-gray-400">Visibility</p>
+                    <p className="text-white capitalize">{selectedGroup.visibility}</p>
+                  </div>
+                  <div>
+                    <p className="text-gray-400">Members</p>
+                    <p className="text-white">{selectedGroup.member_count}</p>
+                  </div>
+                  <div>
+                    <p className="text-gray-400">Created</p>
+                    <p className="text-white">{new Date(selectedGroup.created_at).toLocaleDateString()}</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Messages */}
+              <div className="p-6 border-b border-white/10">
+                <h3 className="text-lg font-bold text-white mb-4">Messages</h3>
+                <div className="space-y-3 mb-4 max-h-64 overflow-y-auto">
+                  {groupMessages.map((msg) => (
+                    <div key={msg.id} className="bg-white/5 rounded-lg p-3">
+                      <div className="flex items-center gap-2 mb-1">
+                        {msg.profiles?.avatar_url && (
+                          <img src={msg.profiles.avatar_url} alt={msg.profiles.name} className="w-6 h-6 rounded-full" />
+                        )}
+                        <span className="text-sm font-semibold text-white">{msg.profiles?.name || 'Unknown'}</span>
+                        <span className="text-xs text-gray-400">{new Date(msg.created_at).toLocaleTimeString()}</span>
+                      </div>
+                      <p className="text-sm text-gray-200">{msg.content}</p>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Message Input */}
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={groupMessageInput}
+                    onChange={(e) => setGroupMessageInput(e.target.value)}
+                    onKeyPress={(e) => e.key === 'Enter' && handleSendGroupMessage()}
+                    placeholder="Type a message..."
+                    className="flex-1 bg-white/5 border border-white/20 rounded-lg px-3 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-white/40"
+                  />
+                  <button
+                    onClick={handleSendGroupMessage}
+                    disabled={sendingGroupMessage}
+                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                  >
+                    {sendingGroupMessage ? '...' : <Send className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+
+              {/* Members */}
+              <div className="p-6">
+                <h3 className="text-lg font-bold text-white mb-4">Members ({groupMembers.length})</h3>
+                <div className="space-y-2 max-h-64 overflow-y-auto">
+                  {groupMembers.map((member) => (
+                    <div key={member.id} className="flex items-center justify-between bg-white/5 rounded-lg p-3">
+                      <div className="flex items-center gap-2">
+                        {member.profiles?.avatar_url && (
+                          <img src={member.profiles.avatar_url} alt={member.profiles.name} className="w-8 h-8 rounded-full" />
+                        )}
+                        <div>
+                          <p className="text-sm font-semibold text-white">{member.profiles?.name || 'Unknown'}</p>
+                          <p className="text-xs text-gray-400 capitalize">{member.role}</p>
+                        </div>
+                      </div>
+                      {member.profiles?.tier && (
+                        <span className="text-xs px-2 py-1 bg-purple-500/20 text-purple-300 rounded capitalize">
+                          {member.profiles.tier}
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Footer - Actions */}
+            <div className="flex gap-2 p-6 border-t border-white/10">
+              {selectedGroup.creator_id === user?.id && (
+                <>
+                  <button
+                    onClick={() => setShowEditGroupModal(true)}
+                    className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-semibold transition-colors flex items-center justify-center gap-2"
+                  >
+                    <Edit2 className="w-4 h-4" />
+                    Edit
+                  </button>
+                  <button
+                    onClick={handleDeleteGroup}
+                    className="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 font-semibold transition-colors flex items-center justify-center gap-2"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    Delete
+                  </button>
+                </>
+              )}
+              <button
+                onClick={handleLeaveGroup}
+                className="flex-1 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 font-semibold transition-colors"
+              >
+                Leave Group
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* EDIT GROUP MODAL */}
+      {showEditGroupModal && selectedGroup && selectedGroup.creator_id === user?.id && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="bg-gradient-to-br from-slate-900 to-slate-800 rounded-2xl w-full max-w-md border border-white/10">
+            <div className="p-6">
+              <h2 className="text-2xl font-bold text-white mb-6">Edit Group</h2>
+
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-semibold text-gray-300 mb-2">Group Name</label>
+                  <input
+                    type="text"
+                    value={editGroupData.name}
+                    onChange={(e) => setEditGroupData({ ...editGroupData, name: e.target.value })}
+                    className="w-full bg-white/5 border border-white/20 rounded-lg px-4 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-white/40"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-semibold text-gray-300 mb-2">Description</label>
+                  <textarea
+                    value={editGroupData.description}
+                    onChange={(e) => setEditGroupData({ ...editGroupData, description: e.target.value })}
+                    rows={3}
+                    className="w-full bg-white/5 border border-white/20 rounded-lg px-4 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-white/40"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-semibold text-gray-300 mb-2">Category</label>
+                  <select
+                    value={editGroupData.category}
+                    onChange={(e) => setEditGroupData({ ...editGroupData, category: e.target.value })}
+                    className="w-full bg-white/5 border border-white/20 rounded-lg px-4 py-2 text-white focus:outline-none focus:border-white/40"
+                  >
+                    <option value="creative">Creative</option>
+                    <option value="professional">Professional</option>
+                    <option value="hobby">Hobby</option>
+                    <option value="learning">Learning</option>
+                    <option value="business">Business</option>
+                    <option value="community">Community</option>
+                  </select>
+                </div>
+
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => setShowEditGroupModal(false)}
+                    className="flex-1 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 font-semibold transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleEditGroup}
+                    disabled={editingGroupSubmitting}
+                    className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 font-semibold transition-colors"
+                  >
+                    {editingGroupSubmitting ? '...' : 'Save'}
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>
