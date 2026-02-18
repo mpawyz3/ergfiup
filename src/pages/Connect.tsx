@@ -879,43 +879,66 @@ export default function Connect() {
   const loadPendingGroupInvites = async () => {
     if (!user?.id) return;
     try {
-      const { data, error } = await supabase
+      // Get invites without JOIN to avoid RLS blocking
+      const { data: invitesData, error: invitesError } = await supabase
         .from('group_invites')
-        .select(`
-          id,
-          group_id,
-          status,
-          message,
-          expires_at,
-          responded_at,
-          created_at,
-          groups!inner (id, name, avatar_url),
-          profiles:invited_by_user_id (name)
-        `)
+        .select('*')
         .eq('invited_user_id', user.id)
         .eq('status', 'pending')
         .order('created_at', { ascending: false });
 
-      if (error) {
-        console.error('🔴 Error loading pending invites:', error);
-      } else {
-        const invites: GroupInvite[] = (data || []).map((invite: any) => ({
+      if (invitesError) {
+        console.error('🔴 Error loading pending invites:', invitesError);
+        return;
+      }
+
+      if (!invitesData || invitesData.length === 0) {
+        setPendingInvites([]);
+        console.log('✅ No pending group invites');
+        return;
+      }
+
+      // Get group IDs from invites
+      const groupIds = invitesData.map(inv => inv.group_id);
+
+      // Fetch group data
+      const { data: groupsData } = await supabase
+        .from('groups')
+        .select('id, name, avatar_url')
+        .in('id', groupIds);
+
+      // Fetch inviter profiles
+      const inviterIds = invitesData.map(inv => inv.invited_by_user_id);
+      const { data: inviterProfiles } = await supabase
+        .from('profiles')
+        .select('id, name')
+        .in('id', inviterIds);
+
+      // Merge data
+      const groupsMap = new Map(groupsData?.map((g: any) => [g.id, g]) || []);
+      const profilesMap = new Map(inviterProfiles?.map((p: any) => [p.id, p]) || []);
+
+      const invites: GroupInvite[] = invitesData.map((invite: any) => {
+        const group = groupsMap.get(invite.group_id);
+        const profile = profilesMap.get(invite.invited_by_user_id);
+        return {
           id: invite.id,
           group_id: invite.group_id,
-          group_name: invite.groups?.name || 'Unknown Group',
-          group_avatar: invite.groups?.avatar_url || '',
+          group_name: group?.name || 'Unknown Group',
+          group_avatar: group?.avatar_url || '',
           invited_user_id: user.id,
           invited_by_user_id: invite.invited_by_user_id,
-          invited_by_name: invite.profiles?.name || 'Unknown User',
+          invited_by_name: profile?.name || 'Unknown User',
           status: invite.status,
           message: invite.message,
           expires_at: invite.expires_at,
           responded_at: invite.responded_at,
           created_at: invite.created_at,
-        }));
-        setPendingInvites(invites);
-        console.log('✅ Loaded pending group invites:', { count: invites.length });
-      }
+        };
+      });
+
+      setPendingInvites(invites);
+      console.log('✅ Loaded pending group invites:', { count: invites.length });
     } catch (error) {
       console.error('🔴 Error loading pending group invites:', error);
     }
